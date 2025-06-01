@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Segmentation Inference</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles if needed, e.g., for canvas border if not using Tailwind's */
+        #imageCanvas.has-image {
+            border: 1px solid #e5e7eb; /* gray-200 */
+        }
+        /* Style for drag-over effect */
+        #dropZone.drag-over {
+            background-color: #e0e7ff; /* indigo-100 */
+            border-color: #6366f1; /* indigo-500 */
+            border: 1px solid #e5e7eb; /* gray-200 */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="bg-white p-6 sm:p-8 rounded-lg shadow-xl w-full max-w-2xl md:max-w-3xl lg:max-w-5xl xl:max-w-6xl">
+        <h1 class="text-2xl sm:text-3xl font-bold text-center text-gray-700 mb-6">Image Segmentation</h1>
+
+        <!-- Image Upload Section -->
+        <div class="mb-6">
+            <label for="imageUpload" class="block text-sm font-medium text-gray-700 mb-2">Upload Image (PNG, JPG, JPEG):</label>
+            <input type="file" id="imageUpload" accept="image/png, image/jpeg, image/jpg"
+                   class="block w-full text-sm text-gray-500
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-full file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-indigo-50 file:text-indigo-700
+                          hover:file:bg-indigo-100
+                          cursor-pointer"/>
+        </div>
+
+        <!-- Image Preview and Canvas Section -->
+        <div class="mb-6 flex flex-col items-center">
+            <h2 class="text-xl font-semibold text-gray-700 mb-3">Image Preview & Segmentation Result</h2>
+            <!-- Make this the drop zone -->
+            <div id="dropZone" class="w-full bg-gray-50 rounded-md overflow-hidden max-h-[65vh] border-2 border-dashed border-gray-300 hover:border-indigo-400 transition-colors duration-200" style="min-height: 200px; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+                <div id="canvasContainer" class="hidden w-full h-full" style="display: flex; justify-content: center; align-items: center;">
+                     <canvas id="imageCanvas" class="max-w-full max-h-full object-contain"></canvas>
+                </div>
+                 <p id="canvasPlaceholder" class="text-gray-500 text-center p-4">Drag & drop an image here, or <label for="imageUpload" class="text-indigo-600 hover:text-indigo-800 font-medium cursor-pointer">click to upload</label>.</p>
+            </div>
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="text-center mb-6 flex flex-col sm:flex-row justify-center items-center space-y-4 sm:space-y-0 sm:space-x-4">
+            <button id="predictButton"
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-lg text-lg shadow-md
+                           focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50
+                           disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors duration-150">
+                Run Inference
+            </button>
+            <button id="clearImageButton"
+                    class="hidden bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-3 px-6 rounded-lg text-lg shadow-md
+                           focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-opacity-50
+                           transition-colors duration-150">
+                Clear Image
+            </button>
+            <div id="loadingIndicator" class="hidden mt-3 text-indigo-600">
+                <svg class="animate-spin h-5 w-5 inline-block mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                Processing...
+            </div>
+        </div>
+
+        <!-- Results Display Section -->
+        <div id="resultsSection" class="hidden mt-4">
+            <div id="errorDisplay" class="hidden p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+            </div>
+            <h3 class="text-lg font-semibold text-gray-700 mb-2">Raw JSON Output:</h3>
+            <pre id="jsonResult" class="bg-gray-100 p-3 rounded-md text-xs overflow-x-auto whitespace-pre-wrap break-all max-h-60"></pre>
+        </div>
+    </div>
+
+    <script>
+        const imageUpload = document.getElementById('imageUpload');
+        const imageCanvas = document.getElementById('imageCanvas');
+        const canvasContainer = document.getElementById('canvasContainer');
+        const dropZone = document.getElementById('dropZone');
+        const canvasPlaceholder = document.getElementById('canvasPlaceholder');
+        const ctx = imageCanvas.getContext('2d');
+        const predictButton = document.getElementById('predictButton');
+        const jsonResult = document.getElementById('jsonResult');
+        const clearImageButton = document.getElementById('clearImageButton');
+        const resultsSection = document.getElementById('resultsSection');
+        const errorDisplay = document.getElementById('errorDisplay');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+
+        let currentImageFile = null;
+        let originalImage = null;
+
+        function handleFile(file) {
+            if (file && file.type.startsWith('image/')) {
+                currentImageFile = file;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    originalImage = new Image();
+                    originalImage.onload = () => {
+                        imageCanvas.width = originalImage.width;
+                        imageCanvas.height = originalImage.height;
+                        ctx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+                        ctx.drawImage(originalImage, 0, 0);
+
+                        canvasContainer.classList.remove('hidden');
+                        canvasContainer.style.display = 'flex'; // Ensure it's flex for centering
+                        imageCanvas.style.display = 'block';
+                        imageCanvas.classList.add('has-image');
+                        canvasPlaceholder.classList.add('hidden');
+                        dropZone.classList.remove('border-dashed', 'border-gray-300', 'hover:border-indigo-400'); // Remove dropzone specific styling
+                        dropZone.classList.add('border-transparent'); // Or a solid border if preferred
+
+                        predictButton.disabled = false;
+                        resultsSection.classList.add('hidden');
+                        errorDisplay.classList.add('hidden');
+                        clearImageButton.classList.remove('hidden');
+                        jsonResult.textContent = '';
+                    }
+                    originalImage.onerror = () => {
+                        showError("Could not load the selected image file. It might be corrupted or an unsupported format.");
+                        resetImageState();
+                    }
+                    originalImage.src = e.target.result;
+                }
+                reader.readAsDataURL(file);
+            } else if (file) {
+                showError("Invalid file type. Please upload an image (PNG, JPG, JPEG).");
+                resetImageState(); // Or just clear the file input
+                imageUpload.value = ''; // Clear the file input if a non-image was dragged
+            } else {
+                resetImageState();
+            }
+        }
+
+        imageUpload.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            handleFile(file);
+        });
+
+        function resetImageState() {
+            currentImageFile = null;
+            originalImage = null;
+            canvasContainer.classList.add('hidden');
+            canvasContainer.style.display = 'none';
+            imageCanvas.style.display = 'none';
+            imageCanvas.classList.remove('has-image');
+            canvasPlaceholder.classList.remove('hidden');
+            
+            // Restore dropzone appearance
+            dropZone.classList.remove('drag-over', 'border-transparent');
+            dropZone.classList.add('border-dashed', 'border-gray-300', 'hover:border-indigo-400');
+            dropZone.style.backgroundColor = ''; // Reset background
+
+            predictButton.disabled = true;
+            resultsSection.classList.add('hidden');
+            errorDisplay.classList.add('hidden');
+            clearImageButton.classList.add('hidden');
+            imageUpload.value = ''; // Clear the file input
+        }
+
+        clearImageButton.addEventListener('click', () => {
+            resetImageState();
+        });
+
+        predictButton.addEventListener('click', async () => {
+            if (!currentImageFile || !originalImage) {
+                showError("Please upload an image first.");
+                return;
+            }
+
+            predictButton.disabled = true;
+            loadingIndicator.classList.remove('hidden');
+            resultsSection.classList.add('hidden');
+            errorDisplay.classList.add('hidden');
+            // clearImageButton is already handled by its own logic or will be reset if error
+            jsonResult.textContent = '';
+
+            const formData = new FormData();
+            formData.append('image', currentImageFile);
+
+            try {
+                const response = await fetch('http://localhost:5000/predict', {
+                    method: 'POST',
+                    body: formData,
+                });
+                console.log('Response status:', response.status);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ error: "Failed to parse error response.", details: `Server responded with status: ${response.status}` }));
+                    throw new Error(errorData.error + (errorData.details ? ` Details: ${errorData.details}` : ''));
+                }
+
+                const data = await response.json();
+                displayResults(data);
+
+            } catch (error) {
+                console.error('Error during prediction:', error);
+                showError(`Prediction failed: ${error.message}`);
+            } finally {
+                loadingIndicator.classList.add('hidden');
+                predictButton.disabled = false;
+                if (currentImageFile) { // Only show clear button if an image is still considered loaded
+                    clearImageButton.classList.remove('hidden');
+                }
+            }
+        });
+
+        // Drag and Drop Event Handlers
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false); // Prevent browser opening file if dropped outside zone
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-over'), false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-over'), false);
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files && files.length > 0) {
+                handleFile(files[0]); // Process the first dropped file
+                imageUpload.files = files; // Optional: update the file input as well
+            }
+        }, false);
+
+
+        function displayResults(data) {
+            resultsSection.classList.remove('hidden');
+
+            // Create a deep copy of the data for display purposes to avoid modifying the original
+            const displayData = JSON.parse(JSON.stringify(data));
+
+            // Remove polygon_points_xy from the displayData for cleaner JSON output
+            if (displayData.segmentations && Array.isArray(displayData.segmentations)) {
+                displayData.segmentations.forEach(seg => {
+                    delete seg.polygon_points_xy;
+                });
+            }
+            jsonResult.textContent = JSON.stringify(displayData, null, 2);
+
+            if (originalImage) {
+                ctx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+                ctx.drawImage(originalImage, 0, 0, imageCanvas.width, imageCanvas.height);
+            } else {
+                showError("Original image not available for drawing results.");
+                return;
+            }
+
+            // Draw segmentations using the original data which includes polygon_points_xy
+            if (data.segmentations && data.segmentations.length > 0) {
+                data.segmentations.forEach(seg => {
+                    drawSegmentation(seg);
+                });
+            } else if (data.error) {
+                showError(data.error + (data.details ? ` (${data.details})` : ''));
+            } else if (!data.segmentations || data.segmentations.length === 0) {
+                 // Append to the modified JSON text content
+                 const currentJsonText = jsonResult.textContent;
+                 jsonResult.textContent = currentJsonText + "\n\nNote: No segmentations were found in the image.";
+            }
+        }
+
+        function drawSegmentation(segmentation) {
+            const points = segmentation.polygon_points_xy;
+            if (!points || points.length < 2) return;
+
+            const colorObj = getRandomColorObject();
+            const strokeColor = `rgb(${colorObj.r},${colorObj.g},${colorObj.b})`;
+            const fillColor = `rgba(${colorObj.r},${colorObj.g},${colorObj.b}, 0.35)`;
+
+            ctx.beginPath();
+            ctx.moveTo(points[0][0], points[0][1]);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i][0], points[i][1]);
+            }
+            ctx.closePath();
+
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = Math.max(1, Math.min(3, Math.round(imageCanvas.width / 300))); // Dynamic line width
+            ctx.stroke();
+
+            ctx.fillStyle = fillColor;
+            ctx.fill();
+
+            const label = `${segmentation.class_name} (${(segmentation.confidence * 100).toFixed(0)}%)`;
+            ctx.fillStyle = strokeColor;
+            ctx.font = `bold ${Math.max(10, Math.min(14, Math.round(imageCanvas.width / 50)))}px Arial`; // Dynamic font size
+            ctx.textBaseline = "bottom";
+
+            let textX = points[0][0] + 5;
+            let textY = points[0][1] - 5;
+            const textMetrics = ctx.measureText(label);
+
+            if (textY < (parseInt(ctx.font, 10) || 12)) textY = (parseInt(ctx.font, 10) || 12) + 2;
+            if (textY > imageCanvas.height - 2) textY = imageCanvas.height - 2;
+            if (textX < 0) textX = 2;
+            if (textX + textMetrics.width > imageCanvas.width) {
+                textX = imageCanvas.width - textMetrics.width - 2;
+            }
+            if (textX < 0) textX = 2; // Re-check
+
+            ctx.fillText(label, textX, textY);
+        }
+
+        function showError(message) {
+            errorDisplay.textContent = message;
+            errorDisplay.classList.remove('hidden');
+            resultsSection.classList.remove('hidden'); // Show results section to make error visible
+        }
+
+        function getRandomColorObject() {
+            const r = Math.floor(Math.random() * 200) + 25; // Avoid too dark/light, range 25-224
+            const g = Math.floor(Math.random() * 200) + 25;
+            const b = Math.floor(Math.random() * 200) + 25;
+            return { r, g, b };
+        }
+
+        // Initial state
+        resetImageState();
+    </script>
+</body>
+</html>
